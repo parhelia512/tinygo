@@ -66,6 +66,7 @@ package reflect
 import (
 	"internal/gclayout"
 	"internal/itoa"
+	"internal/reflectlite"
 	"unsafe"
 )
 
@@ -78,105 +79,40 @@ const (
 	structFieldFlagIsEmbedded
 )
 
-type Kind uint8
+type Kind = reflectlite.Kind
 
-// Copied from reflect/type.go
-// https://golang.org/src/reflect/type.go?s=8302:8316#L217
-// These constants must match basicTypes and the typeKind* constants in
-// compiler/interface.go
 const (
-	Invalid Kind = iota
-	Bool
-	Int
-	Int8
-	Int16
-	Int32
-	Int64
-	Uint
-	Uint8
-	Uint16
-	Uint32
-	Uint64
-	Uintptr
-	Float32
-	Float64
-	Complex64
-	Complex128
-	String
-	UnsafePointer
-	Chan
-	Interface
-	Pointer
-	Slice
-	Array
-	Func
-	Map
-	Struct
+	Invalid       Kind = reflectlite.Invalid
+	Bool          Kind = reflectlite.Bool
+	Int           Kind = reflectlite.Int
+	Int8          Kind = reflectlite.Int8
+	Int16         Kind = reflectlite.Int16
+	Int32         Kind = reflectlite.Int32
+	Int64         Kind = reflectlite.Int64
+	Uint          Kind = reflectlite.Uint
+	Uint8         Kind = reflectlite.Uint8
+	Uint16        Kind = reflectlite.Uint16
+	Uint32        Kind = reflectlite.Uint32
+	Uint64        Kind = reflectlite.Uint64
+	Uintptr       Kind = reflectlite.Uintptr
+	Float32       Kind = reflectlite.Float32
+	Float64       Kind = reflectlite.Float64
+	Complex64     Kind = reflectlite.Complex64
+	Complex128    Kind = reflectlite.Complex128
+	String        Kind = reflectlite.String
+	UnsafePointer Kind = reflectlite.UnsafePointer
+	Chan          Kind = reflectlite.Chan
+	Interface     Kind = reflectlite.Interface
+	Pointer       Kind = reflectlite.Pointer
+	Slice         Kind = reflectlite.Slice
+	Array         Kind = reflectlite.Array
+	Func          Kind = reflectlite.Func
+	Map           Kind = reflectlite.Map
+	Struct        Kind = reflectlite.Struct
 )
 
 // Ptr is the old name for the Pointer kind.
 const Ptr = Pointer
-
-func (k Kind) String() string {
-	switch k {
-	case Invalid:
-		return "invalid"
-	case Bool:
-		return "bool"
-	case Int:
-		return "int"
-	case Int8:
-		return "int8"
-	case Int16:
-		return "int16"
-	case Int32:
-		return "int32"
-	case Int64:
-		return "int64"
-	case Uint:
-		return "uint"
-	case Uint8:
-		return "uint8"
-	case Uint16:
-		return "uint16"
-	case Uint32:
-		return "uint32"
-	case Uint64:
-		return "uint64"
-	case Uintptr:
-		return "uintptr"
-	case Float32:
-		return "float32"
-	case Float64:
-		return "float64"
-	case Complex64:
-		return "complex64"
-	case Complex128:
-		return "complex128"
-	case String:
-		return "string"
-	case UnsafePointer:
-		return "unsafe.Pointer"
-	case Chan:
-		return "chan"
-	case Interface:
-		return "interface"
-	case Pointer:
-		return "ptr"
-	case Slice:
-		return "slice"
-	case Array:
-		return "array"
-	case Func:
-		return "func"
-	case Map:
-		return "map"
-	case Struct:
-		return "struct"
-	default:
-		return "kind" + itoa.Itoa(int(int8(k)))
-	}
-}
 
 // Copied from reflect/type.go
 // https://go.dev/src/reflect/type.go?#L348
@@ -412,6 +348,7 @@ type Type interface {
 }
 
 // Constants for the 'meta' byte.
+// These constants are also defined in the internal/reflectlite package.
 const (
 	kindMask       = 31  // mask to apply to the meta byte to get the Kind value
 	flagNamed      = 32  // flag that is set if this is a named type
@@ -614,20 +551,14 @@ func (t *rawType) String() string {
 	return t.Kind().String()
 }
 
+//go:linkname typeKind internal/reflectlite.typeKind
+func typeKind(t *rawType) Kind
+
 func (t *rawType) Kind() Kind {
-	if t == nil {
-		return Invalid
-	}
-
-	if tag := t.ptrtag(); tag != 0 {
-		return Pointer
-	}
-
-	return Kind(t.meta & kindMask)
+	return typeKind(t)
 }
 
 var (
-	errTypeElem         = &TypeError{"Elem"}
 	errTypeKey          = &TypeError{"Key"}
 	errTypeField        = &TypeError{"Field"}
 	errTypeBits         = &TypeError{"Bits"}
@@ -644,20 +575,11 @@ func (t *rawType) Elem() Type {
 	return t.elem()
 }
 
-func (t *rawType) elem() *rawType {
-	if tag := t.ptrtag(); tag != 0 {
-		return (*rawType)(unsafe.Add(unsafe.Pointer(t), -1))
-	}
+//go:linkname typeElem internal/reflectlite.typeElem
+func typeElem(t *rawType) *rawType
 
-	underlying := t.underlying()
-	switch underlying.Kind() {
-	case Pointer:
-		return (*ptrType)(unsafe.Pointer(underlying)).elem
-	case Chan, Slice, Array, Map:
-		return (*elemType)(unsafe.Pointer(underlying)).elem
-	default:
-		panic(errTypeElem)
-	}
+func (t *rawType) elem() *rawType {
+	return typeElem(t)
 }
 
 func (t *rawType) key() *rawType {
@@ -871,49 +793,13 @@ func (t *rawType) NumField() int {
 	return int((*structType)(unsafe.Pointer(t.underlying())).numField)
 }
 
+//go:linkname typeSize internal/reflectlite.typeSize
+func typeSize(t *rawType) uintptr
+
 // Size returns the size in bytes of a given type. It is similar to
 // unsafe.Sizeof.
 func (t *rawType) Size() uintptr {
-	switch t.Kind() {
-	case Bool, Int8, Uint8:
-		return 1
-	case Int16, Uint16:
-		return 2
-	case Int32, Uint32:
-		return 4
-	case Int64, Uint64:
-		return 8
-	case Int, Uint:
-		return unsafe.Sizeof(int(0))
-	case Uintptr:
-		return unsafe.Sizeof(uintptr(0))
-	case Float32:
-		return 4
-	case Float64:
-		return 8
-	case Complex64:
-		return 8
-	case Complex128:
-		return 16
-	case String:
-		return unsafe.Sizeof("")
-	case UnsafePointer, Chan, Map, Pointer:
-		return unsafe.Sizeof(uintptr(0))
-	case Slice:
-		return unsafe.Sizeof([]int{})
-	case Interface:
-		return unsafe.Sizeof(interface{}(nil))
-	case Func:
-		var f func()
-		return unsafe.Sizeof(f)
-	case Array:
-		return t.elem().Size() * uintptr(t.Len())
-	case Struct:
-		u := t.underlying()
-		return uintptr((*structType)(unsafe.Pointer(u)).size)
-	default:
-		panic("unimplemented: size of type")
-	}
+	return typeSize(t)
 }
 
 // Align returns the alignment of this type. It is similar to calling
@@ -994,25 +880,13 @@ func (t *rawType) FieldAlign() int {
 	return t.Align()
 }
 
+//go:linkname typeAssignableTo internal/reflectlite.typeAssignableTo
+func typeAssignableTo(t, u *rawType) bool
+
 // AssignableTo returns whether a value of type t can be assigned to a variable
 // of type u.
 func (t *rawType) AssignableTo(u Type) bool {
-	if t == u.(*rawType) {
-		return true
-	}
-
-	if t.underlying() == u.(*rawType).underlying() && (!t.isNamed() || !u.(*rawType).isNamed()) {
-		return true
-	}
-
-	if u.Kind() == Interface && u.NumMethod() == 0 {
-		return true
-	}
-
-	if u.Kind() == Interface {
-		panic("reflect: unimplemented: AssignableTo with interface")
-	}
-	return false
+	return typeAssignableTo(t, u.(*rawType))
 }
 
 func (t *rawType) Implements(u Type) bool {
@@ -1059,24 +933,11 @@ func (t *rawType) NumOut() int {
 	panic("unimplemented: (reflect.Type).NumOut()")
 }
 
+//go:linkname typeNumMethod internal/reflectlite.typeNumMethod
+func typeNumMethod(t *rawType) int
+
 func (t *rawType) NumMethod() int {
-
-	if t.isNamed() {
-		return int((*namedType)(unsafe.Pointer(t)).numMethod)
-	}
-
-	switch t.Kind() {
-	case Pointer:
-		return int((*ptrType)(unsafe.Pointer(t)).numMethod)
-	case Struct:
-		return int((*structType)(unsafe.Pointer(t)).numMethod)
-	case Interface:
-		//FIXME: Use len(methods)
-		return (*interfaceType)(unsafe.Pointer(t)).ptrTo.NumMethod()
-	}
-
-	// Other types have no methods attached.  Note we don't panic here.
-	return 0
+	return typeNumMethod(t)
 }
 
 // Read and return a null terminated string starting from data.

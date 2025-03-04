@@ -1,6 +1,7 @@
 package reflect
 
 import (
+	"internal/reflectlite"
 	"math"
 	"unsafe"
 )
@@ -11,6 +12,8 @@ type valueFlags uint8
 // contained in an interface{} directly, like whether this value was exported at
 // all (it is possible to read unexported fields using reflection, but it is not
 // possible to modify them).
+//
+// These flags are shared with the internal/reflectlite package.
 const (
 	valueFlagIndirect valueFlags = 1 << iota
 	valueFlagExported
@@ -164,30 +167,13 @@ func (v Value) Kind() Kind {
 	return v.typecode.Kind()
 }
 
+//go:linkname valueIsNil internal/reflectlite.valueIsNil
+func valueIsNil(v Value) bool
+
 // IsNil returns whether the value is the nil value. It panics if the value Kind
 // is not a channel, map, pointer, function, slice, or interface.
 func (v Value) IsNil() bool {
-	switch v.Kind() {
-	case Chan, Map, Ptr, UnsafePointer:
-		return v.pointer() == nil
-	case Func:
-		if v.value == nil {
-			return true
-		}
-		fn := (*funcHeader)(v.value)
-		return fn.Code == nil
-	case Slice:
-		if v.value == nil {
-			return true
-		}
-		slice := (*sliceHeader)(v.value)
-		return slice.data == nil
-	case Interface:
-		val := *(*interface{})(v.value)
-		return val == nil
-	default:
-		panic(&ValueError{Method: "IsNil", Kind: v.Kind()})
-	}
+	return valueIsNil(v)
 }
 
 // Pointer returns the underlying pointer of the given value for the following
@@ -656,23 +642,13 @@ func maplen(p unsafe.Pointer) int
 //go:linkname chanlen runtime.chanLen
 func chanlen(p unsafe.Pointer) int
 
+//go:linkname valueLen internal/reflectlite.valueLen
+func valueLen(v Value) int
+
 // Len returns the length of this value for slices, strings, arrays, channels,
 // and maps. For other types, it panics.
 func (v Value) Len() int {
-	switch v.typecode.Kind() {
-	case Array:
-		return v.typecode.Len()
-	case Chan:
-		return chanlen(v.pointer())
-	case Map:
-		return maplen(v.pointer())
-	case Slice:
-		return int((*sliceHeader)(v.value).len)
-	case String:
-		return int((*stringHeader)(v.value).len)
-	default:
-		panic(&ValueError{Method: "Len", Kind: v.Kind()})
-	}
+	return valueLen(v)
 }
 
 //go:linkname chancap runtime.chanCap
@@ -718,30 +694,11 @@ func (v Value) NumField() int {
 	return v.typecode.NumField()
 }
 
+//go:linkname valueElem internal/reflectlite.valueElem
+func valueElem(v Value) Value
+
 func (v Value) Elem() Value {
-	switch v.Kind() {
-	case Ptr:
-		ptr := v.pointer()
-		if ptr == nil {
-			return Value{}
-		}
-		// Don't copy RO flags
-		flags := (v.flags & (valueFlagIndirect | valueFlagExported)) | valueFlagIndirect
-		return Value{
-			typecode: v.typecode.elem(),
-			value:    ptr,
-			flags:    flags,
-		}
-	case Interface:
-		typecode, value := decomposeInterface(*(*interface{})(v.value))
-		return Value{
-			typecode: (*rawType)(typecode),
-			value:    value,
-			flags:    v.flags &^ valueFlagIndirect,
-		}
-	default:
-		panic(&ValueError{Method: "Elem", Kind: v.Kind()})
-	}
+	return valueElem(v)
 }
 
 // Field returns the value of the i'th field of this struct.
@@ -1084,32 +1041,11 @@ func (it *MapIter) Next() bool {
 	return it.valid
 }
 
+//go:linkname valueSet internal/reflectlite.valueSet
+func valueSet(v, x Value)
+
 func (v Value) Set(x Value) {
-	v.checkAddressable()
-	v.checkRO()
-	if !x.typecode.AssignableTo(v.typecode) {
-		panic("reflect.Value.Set: value of type " + x.typecode.String() + " cannot be assigned to type " + v.typecode.String())
-	}
-
-	if v.typecode.Kind() == Interface && x.typecode.Kind() != Interface {
-		// move the value of x back into the interface, if possible
-		if x.isIndirect() && x.typecode.Size() <= unsafe.Sizeof(uintptr(0)) {
-			x.value = unsafe.Pointer(loadValue(x.value, x.typecode.Size()))
-		}
-
-		intf := composeInterface(unsafe.Pointer(x.typecode), x.value)
-		x = Value{
-			typecode: v.typecode,
-			value:    unsafe.Pointer(&intf),
-		}
-	}
-
-	size := v.typecode.Size()
-	if size <= unsafe.Sizeof(uintptr(0)) && !x.isIndirect() {
-		storeValue(v.value, size, uintptr(x.value))
-	} else {
-		memcpy(v.value, x.value, size)
-	}
+	valueSet(v, x)
 }
 
 func (v Value) SetZero() {
@@ -1648,17 +1584,7 @@ var (
 	_ [unsafe.Sizeof("")]byte       = [unsafe.Sizeof(stringHeader{})]byte{}
 )
 
-type ValueError struct {
-	Method string
-	Kind   Kind
-}
-
-func (e *ValueError) Error() string {
-	if e.Kind == 0 {
-		return "reflect: call of " + e.Method + " on zero Value"
-	}
-	return "reflect: call of " + e.Method + " on " + e.Kind.String() + " Value"
-}
+type ValueError = reflectlite.ValueError
 
 //go:linkname memcpy runtime.memcpy
 func memcpy(dst, src unsafe.Pointer, size uintptr)
